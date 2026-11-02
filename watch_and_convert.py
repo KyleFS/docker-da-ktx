@@ -3,8 +3,10 @@
 
 watchdog reports file changes under WATCH_DIR. Once a source image has gone
 STABILITY_SECONDS without a new event (i.e. it has finished being written),
-it is converted to a .ktx2 sibling with `toktx` from KTX-Software. Files
-already present at startup are converted too, unless their .ktx2 is up to date.
+it is converted to a .ktx2 sibling with `toktx` from KTX-Software, then moved
+into a PROCESSED_DIR subdirectory beside it, which is not watched. Files already
+present at startup are converted too, unless their .ktx2 is up to date. Sources
+that fail to convert stay where they are.
 
 Configuration is via environment variables (set these in Docker).
 """
@@ -27,6 +29,7 @@ EXTENSIONS = {
     for e in os.environ.get("SOURCE_EXTENSIONS", "png,jpg,jpeg,tga,bmp").split(",")
     if e.strip()
 }
+PROCESSED_DIR = os.environ.get("PROCESSED_DIR", "__processed")
 TOKTX_ARGS = shlex.split(os.environ.get("TOKTX_ARGS", "--t2 --genmipmap --encode uastc --zcmp 19"))
 STABILITY_SECONDS = float(os.environ.get("STABILITY_SECONDS", "2"))
 # Native filesystem events don't always cross Docker bind mounts; polling always works.
@@ -43,7 +46,7 @@ lock = threading.Lock()
 
 
 def mark(path: Path) -> None:
-    if path.suffix.lower() in EXTENSIONS:
+    if path.suffix.lower() in EXTENSIONS and PROCESSED_DIR not in path.relative_to(WATCH_DIR).parts:
         with lock:
             pending[path] = time.monotonic()
 
@@ -55,10 +58,20 @@ class Handler(FileSystemEventHandler):
         mark(Path(event.dest_path or event.src_path))  # dest_path is only set for moves
 
 
+def move_to_processed(src: Path) -> None:
+    target = src.parent / PROCESSED_DIR / src.name
+    try:
+        target.parent.mkdir(exist_ok=True)
+        src.replace(target)
+    except OSError as e:
+        log.error("Could not move %s to %s: %s", src, target, e)
+
+
 def convert(src: Path) -> None:
     dest = src.with_suffix(".ktx2")
     try:
         if dest.exists() and dest.stat().st_mtime >= src.stat().st_mtime:
+            move_to_processed(src)
             return  # already up to date
     except OSError:
         return  # source vanished
@@ -67,6 +80,8 @@ def convert(src: Path) -> None:
     if result.returncode != 0:
         log.error("toktx failed (exit %s) for %s\n%s", result.returncode, src, result.stderr.strip())
         dest.unlink(missing_ok=True)
+        return
+    move_to_processed(src)
 
 
 def main() -> None:

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Watch a directory of Dungeon Alchemist batch exports and convert images to KTX2.
 
-watchdog reports file changes under WATCH_DIR. Once a source image has gone
+watchdog reports file changes under INPUT_DIR. Once a source image has gone
 STABILITY_SECONDS without a new event (i.e. it has finished being written),
-it is converted to a .ktx2 sibling with `toktx` from KTX-Software, then moved
-into a PROCESSED_DIR subdirectory beside it, which is not watched. Files already
-present at startup are converted too, unless their .ktx2 is up to date. Sources
-that fail to convert stay where they are.
+it is converted to a .ktx2 at the same relative path under OUTPUT_DIR with
+`toktx` from KTX-Software, then moved into a PROCESSED_DIR subdirectory beside
+it, which is not watched. Files already present at startup are converted too,
+unless their .ktx2 is up to date. Sources that fail to convert stay where they
+are.
 
 Configuration is via environment variables (set these in Docker).
 """
@@ -23,12 +24,14 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
-WATCH_DIR = Path(os.environ.get("WATCH_DIR", "/data"))
+INPUT_DIR = Path(os.environ.get("INPUT_DIR", "/mnt/input"))
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/mnt/output"))
 EXTENSIONS = {
     "." + e.strip().lower().lstrip(".")
     for e in os.environ.get("SOURCE_EXTENSIONS", "png,jpg,jpeg,tga,bmp").split(",")
     if e.strip()
 }
+# Relative to each source's own directory, so it stays on the input mount.
 PROCESSED_DIR = os.environ.get("PROCESSED_DIR", "__processed")
 TOKTX_ARGS = shlex.split(os.environ.get("TOKTX_ARGS", "--t2 --genmipmap --encode uastc --zcmp 19"))
 STABILITY_SECONDS = float(os.environ.get("STABILITY_SECONDS", "2"))
@@ -46,7 +49,7 @@ lock = threading.Lock()
 
 
 def mark(path: Path) -> None:
-    if path.suffix.lower() in EXTENSIONS and PROCESSED_DIR not in path.relative_to(WATCH_DIR).parts:
+    if path.suffix.lower() in EXTENSIONS and PROCESSED_DIR not in path.relative_to(INPUT_DIR).parts:
         with lock:
             pending[path] = time.monotonic()
 
@@ -68,14 +71,19 @@ def move_to_processed(src: Path) -> None:
 
 
 def convert(src: Path) -> None:
-    dest = src.with_suffix(".ktx2")
+    dest = OUTPUT_DIR / src.relative_to(INPUT_DIR).with_suffix(".ktx2")
     try:
         if dest.exists() and dest.stat().st_mtime >= src.stat().st_mtime:
             move_to_processed(src)
             return  # already up to date
     except OSError:
         return  # source vanished
-    log.info("Converting %s", src)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.error("Could not create %s: %s", dest.parent, e)
+        return
+    log.info("Converting %s to %s", src, dest)
     result = subprocess.run(["toktx", *TOKTX_ARGS, str(dest), str(src)], capture_output=True, text=True)
     if result.returncode != 0:
         log.error("toktx failed (exit %s) for %s\n%s", result.returncode, src, result.stderr.strip())
@@ -85,15 +93,16 @@ def convert(src: Path) -> None:
 
 
 def main() -> None:
-    if not WATCH_DIR.is_dir():
-        raise SystemExit(f"WATCH_DIR does not exist or is not a directory: {WATCH_DIR}")
+    for name, directory in (("INPUT_DIR", INPUT_DIR), ("OUTPUT_DIR", OUTPUT_DIR)):
+        if not directory.is_dir():
+            raise SystemExit(f"{name} does not exist or is not a directory: {directory}")
 
     observer = PollingObserver() if USE_POLLING else Observer()
-    observer.schedule(Handler(), str(WATCH_DIR), recursive=True)
+    observer.schedule(Handler(), str(INPUT_DIR), recursive=True)
     observer.start()
-    log.info("Watching %s for %s (polling=%s)", WATCH_DIR, sorted(EXTENSIONS), USE_POLLING)
+    log.info("Watching %s for %s, writing to %s (polling=%s)", INPUT_DIR, sorted(EXTENSIONS), OUTPUT_DIR, USE_POLLING)
 
-    for path in WATCH_DIR.rglob("*"):
+    for path in INPUT_DIR.rglob("*"):
         mark(path)
 
     try:

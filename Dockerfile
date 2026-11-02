@@ -23,9 +23,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY watch_and_convert.py .
 
+# Mount /mnt/input and /mnt/output separately. They're deliberately not declared as
+# VOLUMEs: a forgotten mount should fail at startup, not write to an anonymous volume.
 ENV PYTHONUNBUFFERED=1 \
-    WATCH_DIR=/data
-
-VOLUME ["/data"]
+    INPUT_DIR=/mnt/input \
+    OUTPUT_DIR=/mnt/output
 
 CMD ["python", "watch_and_convert.py"]

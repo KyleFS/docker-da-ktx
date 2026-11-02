@@ -19,6 +19,8 @@ and weather variants (matched by VARIANT_PATTERN) are skipped:
 
 A copy is only replaced by a newer source, so later edits to it survive restarts.
 
+Everything created under OUTPUT_DIR, directories included, gets mode OUTPUT_MODE.
+
 Configuration is via environment variables (set these in Docker).
 """
 
@@ -59,6 +61,8 @@ STABILITY_SECONDS = float(os.environ.get("STABILITY_SECONDS", "2"))
 USE_POLLING = os.environ.get("USE_POLLING", "false").lower() in ("1", "true", "yes")
 # The two mounts can store timestamps at different precision (down to 2s on FAT).
 MTIME_TOLERANCE_NS = 2_000_000_000
+# Set with chmod, as a mode passed at creation would be masked by the umask.
+OUTPUT_MODE = 0o774
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -106,6 +110,13 @@ def copy(src: Path, tmp: Path) -> bool:
     return True
 
 
+def make_dirs(path: Path) -> None:
+    missing = [p for p in (path, *path.parents) if not p.exists()]
+    path.mkdir(parents=True, exist_ok=True)
+    for directory in missing:
+        directory.chmod(OUTPUT_MODE)
+
+
 def process(src: Path) -> None:
     is_image = src.suffix.lower() in EXTENSIONS
     dest = OUTPUT_DIR / src.relative_to(INPUT_DIR)
@@ -120,7 +131,7 @@ def process(src: Path) -> None:
     except OSError:
         return  # source vanished
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        make_dirs(dest.parent)
     except OSError as e:
         log.error("Could not create %s: %s", dest.parent, e)
         return
@@ -131,6 +142,7 @@ def process(src: Path) -> None:
         tmp.unlink(missing_ok=True)
         return
     try:
+        tmp.chmod(OUTPUT_MODE)
         tmp.replace(dest)
         os.utime(dest, ns=(src_mtime, src_mtime))
     except OSError as e:

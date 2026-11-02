@@ -28,10 +28,15 @@ INPUT_DIR = Path(os.environ.get("INPUT_DIR", "/mnt/input"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/mnt/output"))
 EXTENSIONS = {
     "." + e.strip().lower().lstrip(".")
-    for e in os.environ.get("SOURCE_EXTENSIONS", "png,jpg,jpeg,tga,bmp").split(",")
+    for e in os.environ.get("SOURCE_EXTENSIONS", "png,jpg,jpeg").split(",")
     if e.strip()
 }
-TOKTX_ARGS = shlex.split(os.environ.get("TOKTX_ARGS", "--t2 --genmipmap --encode uastc --zcmp 19"))
+TOKTX_ARGS = shlex.split(
+    os.environ.get(
+        "TOKTX_ARGS",
+        "--encode uastc --uastc_quality 2 --uastc_rdo_l 1.0 --zcmp 19 --genmipmap --target_type RGB",
+    )
+)
 STABILITY_SECONDS = float(os.environ.get("STABILITY_SECONDS", "2"))
 # Native filesystem events don't always cross Docker bind mounts; polling always works.
 USE_POLLING = os.environ.get("USE_POLLING", "false").lower() in ("1", "true", "yes")

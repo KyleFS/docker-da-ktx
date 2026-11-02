@@ -4,10 +4,10 @@
 watchdog reports file changes under INPUT_DIR. Once a source image has gone
 STABILITY_SECONDS without a new event (i.e. it has finished being written),
 it is converted to a .ktx2 at the same relative path under OUTPUT_DIR with
-`toktx` from KTX-Software, then moved into a PROCESSED_DIR subdirectory beside
-it, which is not watched. Files already present at startup are converted too,
-unless their .ktx2 is up to date. Sources that fail to convert stay where they
-are.
+`toktx` from KTX-Software. Source images are never changed or removed. A .ktx2
+only appears once complete and is stamped with its source's mtime, and a source
+is converted unless its .ktx2 carries a matching one. Files already present at
+startup go through the same check.
 
 Configuration is via environment variables (set these in Docker).
 """
@@ -31,12 +31,12 @@ EXTENSIONS = {
     for e in os.environ.get("SOURCE_EXTENSIONS", "png,jpg,jpeg,tga,bmp").split(",")
     if e.strip()
 }
-# Relative to each source's own directory, so it stays on the input mount.
-PROCESSED_DIR = os.environ.get("PROCESSED_DIR", "__processed")
 TOKTX_ARGS = shlex.split(os.environ.get("TOKTX_ARGS", "--t2 --genmipmap --encode uastc --zcmp 19"))
 STABILITY_SECONDS = float(os.environ.get("STABILITY_SECONDS", "2"))
 # Native filesystem events don't always cross Docker bind mounts; polling always works.
 USE_POLLING = os.environ.get("USE_POLLING", "false").lower() in ("1", "true", "yes")
+# The two mounts can store timestamps at different precision (down to 2s on FAT).
+MTIME_TOLERANCE_NS = 2_000_000_000
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -49,7 +49,7 @@ lock = threading.Lock()
 
 
 def mark(path: Path) -> None:
-    if path.suffix.lower() in EXTENSIONS and PROCESSED_DIR not in path.relative_to(INPUT_DIR).parts:
+    if path.suffix.lower() in EXTENSIONS:
         with lock:
             pending[path] = time.monotonic()
 
@@ -61,20 +61,11 @@ class Handler(FileSystemEventHandler):
         mark(Path(event.dest_path or event.src_path))  # dest_path is only set for moves
 
 
-def move_to_processed(src: Path) -> None:
-    target = src.parent / PROCESSED_DIR / src.name
-    try:
-        target.parent.mkdir(exist_ok=True)
-        src.replace(target)
-    except OSError as e:
-        log.error("Could not move %s to %s: %s", src, target, e)
-
-
 def convert(src: Path) -> None:
     dest = OUTPUT_DIR / src.relative_to(INPUT_DIR).with_suffix(".ktx2")
     try:
-        if dest.exists() and dest.stat().st_mtime >= src.stat().st_mtime:
-            move_to_processed(src)
+        src_mtime = src.stat().st_mtime_ns
+        if dest.exists() and abs(dest.stat().st_mtime_ns - src_mtime) < MTIME_TOLERANCE_NS:
             return  # already up to date
     except OSError:
         return  # source vanished
@@ -84,12 +75,19 @@ def convert(src: Path) -> None:
         log.error("Could not create %s: %s", dest.parent, e)
         return
     log.info("Converting %s to %s", src, dest)
-    result = subprocess.run(["toktx", *TOKTX_ARGS, str(dest), str(src)], capture_output=True, text=True)
+    # Written beside dest and renamed once complete, so a conversion interrupted
+    # partway never leaves a partial file at dest. Keeps the .ktx2 suffix for toktx.
+    tmp = dest.with_name(f".{dest.name}")
+    result = subprocess.run(["toktx", *TOKTX_ARGS, str(tmp), str(src)], capture_output=True, text=True)
     if result.returncode != 0:
         log.error("toktx failed (exit %s) for %s\n%s", result.returncode, src, result.stderr.strip())
-        dest.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
         return
-    move_to_processed(src)
+    try:
+        tmp.replace(dest)
+        os.utime(dest, ns=(src_mtime, src_mtime))
+    except OSError as e:
+        log.error("Could not finish %s: %s", dest, e)
 
 
 def main() -> None:

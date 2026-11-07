@@ -28,5 +28,9 @@ COPY watch_and_convert.py .
 ENV PYTHONUNBUFFERED=1 \
     INPUT_DIR=/mnt/input \
     OUTPUT_DIR=/mnt/output
+# Optionally pass at runtime, to override fields of the copied .json:
+#   FOUNDRY_ASSET_DIR  path Foundry uses for /mnt/output (e.g. assets/maps); "img" is pointed under it
+#   GRID_COLOR         "gridColor", e.g. #000000
+#   GRID_ALPHA         "gridAlpha", e.g. 0.2
 
 CMD ["python", "watch_and_convert.py"]

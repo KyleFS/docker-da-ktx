@@ -21,9 +21,19 @@ A copy is only replaced by a newer source, so later edits to it survive restarts
 
 Everything created under OUTPUT_DIR, directories included, gets mode OUTPUT_MODE.
 
+Some fields of each copy can be overridden, each only when its variable is set:
+
+    img          FOUNDRY_ASSET_DIR, where Foundry sees OUTPUT_DIR (e.g. "assets/maps"),
+                 joined with the base image's .ktx2 path under OUTPUT_DIR
+    gridColor    GRID_COLOR, e.g. "#000000"
+    gridAlpha    GRID_ALPHA, e.g. 0.2
+
+With none set, the .json is copied unchanged.
+
 Configuration is via environment variables (set these in Docker).
 """
 
+import json
 import logging
 import os
 import re
@@ -40,6 +50,14 @@ from watchdog.observers.polling import PollingObserver
 
 INPUT_DIR = Path(os.environ.get("INPUT_DIR", "/mnt/input"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/mnt/output"))
+# Joined as a string rather than a path so a URL keeps its "//".
+FOUNDRY_ASSET_DIR = os.environ.get("FOUNDRY_ASSET_DIR", "").strip().rstrip("/")
+# Fields set to the same value in every copied .json. "img" is added per file.
+JSON_OVERRIDES = {}
+if os.environ.get("GRID_COLOR", "").strip():
+    JSON_OVERRIDES["gridColor"] = os.environ["GRID_COLOR"].strip()
+if os.environ.get("GRID_ALPHA", "").strip():
+    JSON_OVERRIDES["gridAlpha"] = float(os.environ["GRID_ALPHA"])
 EXTENSIONS = {
     "." + e.strip().lower().lstrip(".")
     for e in os.environ.get("SOURCE_EXTENSIONS", "png,jpg,jpeg").split(",")
@@ -100,11 +118,21 @@ def convert(src: Path, tmp: Path) -> bool:
     return True
 
 
-def copy(src: Path, tmp: Path) -> bool:
+def copy_json(src: Path, tmp: Path) -> bool:
     log.info("Copying %s", src)
+    overrides = dict(JSON_OVERRIDES)
+    if FOUNDRY_ASSET_DIR:
+        overrides["img"] = f"{FOUNDRY_ASSET_DIR}/{src.relative_to(INPUT_DIR).with_suffix('.ktx2').as_posix()}"
     try:
-        shutil.copyfile(src, tmp)
-    except OSError as e:
+        if not overrides:
+            shutil.copyfile(src, tmp)
+            return True
+        data = json.loads(src.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("top level is not an object")
+        data.update(overrides)
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except (OSError, ValueError) as e:
         log.error("Could not copy %s: %s", src, e)
         return False
     return True
@@ -138,7 +166,7 @@ def process(src: Path) -> None:
     # Written beside dest and renamed once complete, so work interrupted partway
     # never leaves a partial file at dest. Keeps the .ktx2 suffix for toktx.
     tmp = dest.with_name(f".{dest.name}")
-    if not (convert if is_image else copy)(src, tmp):
+    if not (convert if is_image else copy_json)(src, tmp):
         tmp.unlink(missing_ok=True)
         return
     try:
@@ -158,6 +186,8 @@ def main() -> None:
     observer.schedule(Handler(), str(INPUT_DIR), recursive=True)
     observer.start()
     log.info("Watching %s for %s and base .json, writing to %s (polling=%s)", INPUT_DIR, sorted(EXTENSIONS), OUTPUT_DIR, USE_POLLING)
+    overrides = {**JSON_OVERRIDES, **({"img": f"{FOUNDRY_ASSET_DIR}/..."} if FOUNDRY_ASSET_DIR else {})}
+    log.info("Overriding in .json: %s", overrides or "nothing")
 
     for path in INPUT_DIR.rglob("*"):
         mark(path)

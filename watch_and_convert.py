@@ -124,8 +124,9 @@ def main() -> None:
     observer.start()
     log.info("Watching %s for %s and base .json, writing to %s (polling=%s)", INPUT_DIR, sorted(ktx.EXTENSIONS), OUTPUT_DIR, USE_POLLING)
     log.info(
-        "Levels %s high, backgrounds under %s, grid overrides: %s",
-        scene.LEVEL_HEIGHT, scene.FOUNDRY_ASSET_DIR or "the .json's img", scene.GRID_OVERRIDES or "none",
+        "Levels %s high, backgrounds under %s, background overrides: %s, grid overrides: %s",
+        scene.LEVEL_HEIGHT, scene.FOUNDRY_ASSET_DIR or "the .json's img",
+        scene.BACKGROUND_OVERRIDES or "none", scene.GRID_OVERRIDES or "none",
     )
 
     for path in INPUT_DIR.rglob("*"):

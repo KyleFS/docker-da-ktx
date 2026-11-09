@@ -19,6 +19,8 @@ Some fields of each scene can be overridden, each only when its variable is set:
     background   FOUNDRY_ASSET_DIR, where Foundry sees the output directory
                  (e.g. "assets/maps"), joined with each floor's .ktx2 path in it.
                  Otherwise it is the "img" of the floor's .json.
+    background   BACKGROUND_COLOR, e.g. "#000000", the same on every level
+      color
     grid color   GRID_COLOR, e.g. "#000000"
     grid alpha   GRID_ALPHA, e.g. 0.2
 
@@ -36,6 +38,10 @@ from urllib.parse import quote
 
 # Joined as a string rather than a path so a URL keeps its "//".
 FOUNDRY_ASSET_DIR = os.environ.get("FOUNDRY_ASSET_DIR", "").strip().rstrip("/")
+# Fields of each level's "background" set to the same value in every scene.
+BACKGROUND_OVERRIDES = {}
+if os.environ.get("BACKGROUND_COLOR", "").strip():
+    BACKGROUND_OVERRIDES["color"] = os.environ["BACKGROUND_COLOR"].strip()
 # Fields of "grid" set to the same value in every scene.
 GRID_OVERRIDES = {}
 if os.environ.get("GRID_COLOR", "").strip():
@@ -132,7 +138,7 @@ def build_scene(scene: Path, floors: list[tuple[Path, dict]], root: Path) -> dic
             "_id": level_id,
             "name": f"Level {n + 1}",
             "elevation": {"bottom": bottom, "top": (n + 1) * LEVEL_HEIGHT},
-            "background": {"src": background},
+            "background": {"src": background, **BACKGROUND_OVERRIDES},
             "foreground": {"src": data.get("foreground")},
             "sort": n,
         })

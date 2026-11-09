@@ -30,6 +30,7 @@ ENV PYTHONUNBUFFERED=1 \
     OUTPUT_DIR=/mnt/output
 # Optionally pass at runtime, to adjust the Foundry scene built from each map's .json:
 #   FOUNDRY_ASSET_DIR  path Foundry uses for /mnt/output (e.g. assets/maps); level backgrounds are pointed under it
+#   BACKGROUND_COLOR   "background.color" of every level, e.g. #000000
 #   GRID_COLOR         "grid.color", e.g. #000000
 #   GRID_ALPHA         "grid.alpha", e.g. 0.2
 #   LEVEL_HEIGHT       height of each floor's level, 10 by default

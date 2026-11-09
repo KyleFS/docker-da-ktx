@@ -1,45 +1,26 @@
 #!/usr/bin/env python3
-"""Watch a directory of Dungeon Alchemist batch exports and convert images to KTX2.
+"""Watch a directory of Dungeon Alchemist batch exports and convert them for Foundry.
 
-watchdog reports file changes under INPUT_DIR. Once a source image has gone
-STABILITY_SECONDS without a new event (i.e. it has finished being written),
-it is converted to a .ktx2 at the same relative path under OUTPUT_DIR with
-`toktx` from KTX-Software. Source files are never changed or removed. A .ktx2
-only appears once complete and is stamped with its source's mtime, and a source
-is converted unless its .ktx2 carries a matching one. Files already present at
-startup go through the same check.
+watchdog reports file changes under INPUT_DIR. Once a source has gone
+STABILITY_SECONDS without a new event (i.e. it has finished being written), it
+is converted into OUTPUT_DIR at the same relative path. Source files are never
+changed or removed. An output only appears once complete and is stamped with its
+source's mtime, and a source is converted unless its output carries a matching
+one. Files already present at startup go through the same check.
 
-Each image has a matching .json beside it. Those of the base images are copied
-to the same relative path under OUTPUT_DIR, whereas those of the time-of-day
-and weather variants (matched by VARIANT_PATTERN) are skipped:
+    images     converted to .ktx2, see ktx.py
+    .json      each map's floors combined into a Foundry scene, see scene.py
 
-    Map_00.json                 base, one per level
-    Map_Evening_00.json         variant
-    Map_Snow_Evening_00.json    variant
-
-A copy is only replaced by a newer source, so later edits to it survive restarts.
+A scene is only replaced when one of its floors' .json is newer, so later edits
+to it survive restarts.
 
 Everything created under OUTPUT_DIR, directories included, gets mode OUTPUT_MODE.
-
-Some fields of each copy can be overridden, each only when its variable is set:
-
-    img          FOUNDRY_ASSET_DIR, where Foundry sees OUTPUT_DIR (e.g. "assets/maps"),
-                 joined with the base image's .ktx2 path under OUTPUT_DIR
-    gridColor    GRID_COLOR, e.g. "#000000"
-    gridAlpha    GRID_ALPHA, e.g. 0.2
-
-With none set, the .json is copied unchanged.
 
 Configuration is via environment variables (set these in Docker).
 """
 
-import json
 import logging
 import os
-import re
-import shlex
-import shutil
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -48,32 +29,11 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
+import ktx
+import scene
+
 INPUT_DIR = Path(os.environ.get("INPUT_DIR", "/mnt/input"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/mnt/output"))
-# Joined as a string rather than a path so a URL keeps its "//".
-FOUNDRY_ASSET_DIR = os.environ.get("FOUNDRY_ASSET_DIR", "").strip().rstrip("/")
-# Fields set to the same value in every copied .json. "img" is added per file.
-JSON_OVERRIDES = {}
-if os.environ.get("GRID_COLOR", "").strip():
-    JSON_OVERRIDES["gridColor"] = os.environ["GRID_COLOR"].strip()
-if os.environ.get("GRID_ALPHA", "").strip():
-    JSON_OVERRIDES["gridAlpha"] = float(os.environ["GRID_ALPHA"])
-EXTENSIONS = {
-    "." + e.strip().lower().lstrip(".")
-    for e in os.environ.get("SOURCE_EXTENSIONS", "png,jpg,jpeg").split(",")
-    if e.strip()
-}
-# Tested against the filename stem.
-VARIANT_PATTERN = re.compile(
-    os.environ.get("VARIANT_PATTERN", r"_(Morning|Noon|Evening|Night|Snow)(_\d+)?$"),
-    re.IGNORECASE,
-)
-TOKTX_ARGS = shlex.split(
-    os.environ.get(
-        "TOKTX_ARGS",
-        "--encode uastc --uastc_quality 2 --uastc_rdo_l 1.0 --zcmp 19 --genmipmap --target_type RGB",
-    )
-)
 STABILITY_SECONDS = float(os.environ.get("STABILITY_SECONDS", "2"))
 # Native filesystem events don't always cross Docker bind mounts; polling always works.
 USE_POLLING = os.environ.get("USE_POLLING", "false").lower() in ("1", "true", "yes")
@@ -88,18 +48,21 @@ logging.basicConfig(
 )
 log = logging.getLogger("da_ktx_watch")
 
-pending: dict[Path, float] = {}  # src -> time of its most recent event
+# An image, or a scene's path under INPUT_DIR (which no file has) -> time of its
+# most recent event. A scene's floors share it, so it waits for all of them.
+pending: dict[Path, float] = {}
 lock = threading.Lock()
 
 
-def is_base_json(path: Path) -> bool:
-    return path.suffix.lower() == ".json" and not VARIANT_PATTERN.search(path.stem)
-
-
 def mark(path: Path) -> None:
-    if path.suffix.lower() in EXTENSIONS or is_base_json(path):
-        with lock:
-            pending[path] = time.monotonic()
+    if ktx.is_image(path):
+        key = path
+    elif scene.is_base_json(path):
+        key = scene.scene_of(path)
+    else:
+        return
+    with lock:
+        pending[key] = time.monotonic()
 
 
 class Handler(FileSystemEventHandler):
@@ -109,35 +72,6 @@ class Handler(FileSystemEventHandler):
         mark(Path(event.dest_path or event.src_path))  # dest_path is only set for moves
 
 
-def convert(src: Path, tmp: Path) -> bool:
-    log.info("Converting %s", src)
-    result = subprocess.run(["toktx", *TOKTX_ARGS, str(tmp), str(src)], capture_output=True, text=True)
-    if result.returncode != 0:
-        log.error("toktx failed (exit %s) for %s\n%s", result.returncode, src, result.stderr.strip())
-        return False
-    return True
-
-
-def copy_json(src: Path, tmp: Path) -> bool:
-    log.info("Copying %s", src)
-    overrides = dict(JSON_OVERRIDES)
-    if FOUNDRY_ASSET_DIR:
-        overrides["img"] = f"{FOUNDRY_ASSET_DIR}/{src.relative_to(INPUT_DIR).with_suffix('.ktx2').as_posix()}"
-    try:
-        if not overrides:
-            shutil.copyfile(src, tmp)
-            return True
-        data = json.loads(src.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("top level is not an object")
-        data.update(overrides)
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    except (OSError, ValueError) as e:
-        log.error("Could not copy %s: %s", src, e)
-        return False
-    return True
-
-
 def make_dirs(path: Path) -> None:
     missing = [p for p in (path, *path.parents) if not p.exists()]
     path.mkdir(parents=True, exist_ok=True)
@@ -145,18 +79,21 @@ def make_dirs(path: Path) -> None:
         directory.chmod(OUTPUT_MODE)
 
 
-def process(src: Path) -> None:
-    is_image = src.suffix.lower() in EXTENSIONS
-    dest = OUTPUT_DIR / src.relative_to(INPUT_DIR)
+def process(key: Path) -> None:
+    is_image = ktx.is_image(key)
+    dest = OUTPUT_DIR / key.relative_to(INPUT_DIR)
     if is_image:
         dest = dest.with_suffix(".ktx2")
+        sources = [key]
+    else:
+        sources = scene.floors_of(key)
     try:
-        src_mtime = src.stat().st_mtime_ns
+        src_mtime = max(p.stat().st_mtime_ns for p in sources)
         if dest.exists():
             age = src_mtime - dest.stat().st_mtime_ns
             if (abs(age) if is_image else age) < MTIME_TOLERANCE_NS:
                 return  # already up to date
-    except OSError:
+    except (OSError, ValueError):
         return  # source vanished
     try:
         make_dirs(dest.parent)
@@ -166,7 +103,7 @@ def process(src: Path) -> None:
     # Written beside dest and renamed once complete, so work interrupted partway
     # never leaves a partial file at dest. Keeps the .ktx2 suffix for toktx.
     tmp = dest.with_name(f".{dest.name}")
-    if not (convert if is_image else copy_json)(src, tmp):
+    if not (ktx.convert(key, tmp) if is_image else scene.write_scene(key, sources, INPUT_DIR, tmp)):
         tmp.unlink(missing_ok=True)
         return
     try:
@@ -185,9 +122,11 @@ def main() -> None:
     observer = PollingObserver() if USE_POLLING else Observer()
     observer.schedule(Handler(), str(INPUT_DIR), recursive=True)
     observer.start()
-    log.info("Watching %s for %s and base .json, writing to %s (polling=%s)", INPUT_DIR, sorted(EXTENSIONS), OUTPUT_DIR, USE_POLLING)
-    overrides = {**JSON_OVERRIDES, **({"img": f"{FOUNDRY_ASSET_DIR}/..."} if FOUNDRY_ASSET_DIR else {})}
-    log.info("Overriding in .json: %s", overrides or "nothing")
+    log.info("Watching %s for %s and base .json, writing to %s (polling=%s)", INPUT_DIR, sorted(ktx.EXTENSIONS), OUTPUT_DIR, USE_POLLING)
+    log.info(
+        "Levels %s high, backgrounds under %s, grid overrides: %s",
+        scene.LEVEL_HEIGHT, scene.FOUNDRY_ASSET_DIR or "the .json's img", scene.GRID_OVERRIDES or "none",
+    )
 
     for path in INPUT_DIR.rglob("*"):
         mark(path)

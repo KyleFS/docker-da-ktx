@@ -21,16 +21,17 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY watch_and_convert.py .
+COPY watch_and_convert.py ktx.py scene.py ./
 
 # Mount /mnt/input and /mnt/output separately. They're deliberately not declared as
 # VOLUMEs: a forgotten mount should fail at startup, not write to an anonymous volume.
 ENV PYTHONUNBUFFERED=1 \
     INPUT_DIR=/mnt/input \
     OUTPUT_DIR=/mnt/output
-# Optionally pass at runtime, to override fields of the copied .json:
-#   FOUNDRY_ASSET_DIR  path Foundry uses for /mnt/output (e.g. assets/maps); "img" is pointed under it
-#   GRID_COLOR         "gridColor", e.g. #000000
-#   GRID_ALPHA         "gridAlpha", e.g. 0.2
+# Optionally pass at runtime, to adjust the Foundry scene built from each map's .json:
+#   FOUNDRY_ASSET_DIR  path Foundry uses for /mnt/output (e.g. assets/maps); level backgrounds are pointed under it
+#   GRID_COLOR         "grid.color", e.g. #000000
+#   GRID_ALPHA         "grid.alpha", e.g. 0.2
+#   LEVEL_HEIGHT       height of each floor's level, 10 by default
 
 CMD ["python", "watch_and_convert.py"]

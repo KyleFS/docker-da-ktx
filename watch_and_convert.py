@@ -3,7 +3,8 @@
 
 watchdog reports file changes under INPUT_DIR. Once a source has gone
 STABILITY_SECONDS without a new event (i.e. it has finished being written), it
-is converted into OUTPUT_DIR at the same relative path. Source files are never
+is converted into OUTPUT_DIR at the same relative path, with backslashes taken
+as directory separators (see paths.py). Source files are never
 changed or removed. An output only appears once complete and is stamped with its
 source's mtime, and a source is converted unless its output carries a matching
 one. Files already present at startup go through the same check.
@@ -30,6 +31,7 @@ from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
 import ktx
+import paths
 import scene
 
 INPUT_DIR = Path(os.environ.get("INPUT_DIR", "/mnt/input"))
@@ -81,7 +83,7 @@ def make_dirs(path: Path) -> None:
 
 def process(key: Path) -> None:
     is_image = ktx.is_image(key)
-    dest = OUTPUT_DIR / key.relative_to(INPUT_DIR)
+    dest = OUTPUT_DIR / paths.relative(key, INPUT_DIR)
     if is_image:
         dest = dest.with_suffix(".ktx2")
         sources = [key]

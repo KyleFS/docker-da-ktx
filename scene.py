@@ -36,6 +36,8 @@ import string
 from pathlib import Path
 from urllib.parse import quote
 
+import paths
+
 # Joined as a string rather than a path so a URL keeps its "//".
 FOUNDRY_ASSET_DIR = os.environ.get("FOUNDRY_ASSET_DIR", "").strip().rstrip("/")
 # Fields of each level's "background" set to the same value in every scene.
@@ -125,13 +127,14 @@ def build_scene(scene: Path, floors: list[tuple[Path, dict]], root: Path) -> dic
 
     Paths are under root, which Foundry sees as FOUNDRY_ASSET_DIR once converted.
     """
-    scene_name = scene.relative_to(root).as_posix()
+    scene_path = paths.relative(scene, root)
+    scene_name = scene_path.as_posix()
     levels, walls, lights = [], [], []
     for n, (src, data) in enumerate(floors):
         level_id = make_id(scene_name, "level", n)
         bottom = n * LEVEL_HEIGHT + (1 if n else 0)
         if FOUNDRY_ASSET_DIR:
-            background = f"{FOUNDRY_ASSET_DIR}/{quote(src.relative_to(root).with_suffix('.ktx2').as_posix())}"
+            background = f"{FOUNDRY_ASSET_DIR}/{quote(paths.relative(src, root).with_suffix('.ktx2').as_posix())}"
         else:
             background = data.get("img")
         levels.append({
@@ -155,7 +158,7 @@ def build_scene(scene: Path, floors: list[tuple[Path, dict]], root: Path) -> dic
     # Floors of one map share their dimensions and grid, so the lowest speaks for all.
     first = floors[0][1]
     return {
-        "name": FLOOR_PATTERN.sub("", str(first.get("name") or scene.stem)),
+        "name": FLOOR_PATTERN.sub("", str(first.get("name") or scene_path.stem)),
         "width": first.get("width"),
         "height": first.get("height"),
         "padding": first.get("padding", 0),

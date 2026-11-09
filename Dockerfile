@@ -21,7 +21,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY watch_and_convert.py ktx.py scene.py ./
+COPY watch_and_convert.py ktx.py paths.py scene.py ./
 
 # Mount /mnt/input and /mnt/output separately. They're deliberately not declared as
 # VOLUMEs: a forgotten mount should fail at startup, not write to an anonymous volume.

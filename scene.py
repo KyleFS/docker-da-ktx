@@ -189,7 +189,7 @@ def write_scene(scene: Path, sources: list[Path], root: Path, tmp: Path) -> bool
     try:
         floors = []
         for src in sources:
-            data = json.loads(src.read_text(encoding="utf-8"))
+            data = json.loads(src.read_text(encoding="utf-8-sig"))  # accepts a BOM, as Windows can write
             if not isinstance(data, dict):
                 raise ValueError(f"top level of {src.name} is not an object")
             floors.append((src, data))

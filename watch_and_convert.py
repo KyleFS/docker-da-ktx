@@ -13,6 +13,9 @@ sources are converted at once, though never the same one twice.
     images     converted to .ktx2, see ktx.py
     .json      each map's floors combined into a Foundry scene, see scene.py
 
+Hidden files and directories (named starting with ".") are ignored, such as the
+._ files and .DS_Store that macOS leaves on shares and sync tools' temp files.
+
 A scene is only replaced when one of its floors' .json is newer, so later edits
 to it survive restarts.
 
@@ -63,6 +66,8 @@ lock = threading.Lock()
 
 
 def mark(path: Path) -> None:
+    if any(part.startswith(".") for part in path.relative_to(INPUT_DIR).parts):
+        return
     if ktx.is_image(path):
         key = path
     elif scene.is_base_json(path):

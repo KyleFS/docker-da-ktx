@@ -34,5 +34,7 @@ ENV PYTHONUNBUFFERED=1 \
 #   GRID_COLOR         "grid.color", e.g. #000000
 #   GRID_ALPHA         "grid.alpha", e.g. 0.2
 #   LEVEL_HEIGHT       height of each floor's level, 10 by default
+# and the number of images converted at once (each a toktx process holding a full image in memory):
+#   WORKERS            2 by default
 
 CMD ["python", "watch_and_convert.py"]

@@ -7,7 +7,8 @@ is converted into OUTPUT_DIR at the same relative path, with backslashes taken
 as directory separators (see paths.py). Source files are never
 changed or removed. An output only appears once complete and is stamped with its
 source's mtime, and a source is converted unless its output carries a matching
-one. Files already present at startup go through the same check.
+one. Files already present at startup go through the same check. Up to WORKERS
+sources are converted at once, though never the same one twice.
 
     images     converted to .ktx2, see ktx.py
     .json      each map's floors combined into a Foundry scene, see scene.py
@@ -24,6 +25,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
@@ -37,6 +39,8 @@ import scene
 INPUT_DIR = Path(os.environ.get("INPUT_DIR", "/mnt/input"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/mnt/output"))
 STABILITY_SECONDS = float(os.environ.get("STABILITY_SECONDS", "2"))
+# Each conversion is a toktx process, so threads run them truly in parallel.
+WORKERS = int(os.environ.get("WORKERS", "").strip() or 2)
 # Native filesystem events don't always cross Docker bind mounts; polling always works.
 USE_POLLING = os.environ.get("USE_POLLING", "false").lower() in ("1", "true", "yes")
 # The two mounts can store timestamps at different precision (down to 2s on FAT).
@@ -53,6 +57,8 @@ log = logging.getLogger("da_ktx_watch")
 # An image, or a scene's path under INPUT_DIR (which no file has) -> time of its
 # most recent event. A scene's floors share it, so it waits for all of them.
 pending: dict[Path, float] = {}
+# Keys being processed. One that turns up again meanwhile stays pending until it's done.
+running: set[Path] = set()
 lock = threading.Lock()
 
 
@@ -116,6 +122,16 @@ def process(key: Path) -> None:
         log.error("Could not finish %s: %s", dest, e)
 
 
+def run(key: Path) -> None:
+    try:
+        process(key)
+    except Exception:
+        log.exception("Unexpected error processing %s", key)  # else lost in the executor
+    finally:
+        with lock:
+            running.discard(key)
+
+
 def main() -> None:
     for name, directory in (("INPUT_DIR", INPUT_DIR), ("OUTPUT_DIR", OUTPUT_DIR)):
         if not directory.is_dir():
@@ -124,7 +140,10 @@ def main() -> None:
     observer = PollingObserver() if USE_POLLING else Observer()
     observer.schedule(Handler(), str(INPUT_DIR), recursive=True)
     observer.start()
-    log.info("Watching %s for %s and base .json, writing to %s (polling=%s)", INPUT_DIR, sorted(ktx.EXTENSIONS), OUTPUT_DIR, USE_POLLING)
+    log.info(
+        "Watching %s for %s and base .json, writing to %s (polling=%s, workers=%s)",
+        INPUT_DIR, sorted(ktx.EXTENSIONS), OUTPUT_DIR, USE_POLLING, WORKERS,
+    )
     log.info(
         "Levels %s high, backgrounds under %s, background overrides: %s, grid overrides: %s",
         scene.LEVEL_HEIGHT, scene.FOUNDRY_ASSET_DIR or "the .json's img",
@@ -134,21 +153,24 @@ def main() -> None:
     for path in INPUT_DIR.rglob("*"):
         mark(path)
 
+    executor = ThreadPoolExecutor(max_workers=WORKERS)
     try:
         while True:
             time.sleep(1)
             now = time.monotonic()
             with lock:
-                ready = [p for p, t in pending.items() if now - t >= STABILITY_SECONDS]
+                ready = [p for p, t in pending.items() if now - t >= STABILITY_SECONDS and p not in running]
                 for p in ready:
                     del pending[p]
+                    running.add(p)
             for p in ready:
-                process(p)
+                executor.submit(run, p)
     except KeyboardInterrupt:
         pass
     finally:
         observer.stop()
         observer.join()
+        executor.shutdown(cancel_futures=True)
 
 
 if __name__ == "__main__":
